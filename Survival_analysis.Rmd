@@ -1,0 +1,535 @@
+---
+title: "Medical Statistics"
+author: "u1620789"
+date: "3/21/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo = T, results="hide", message=FALSE}
+library(survival)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+```
+
+## Question 1) Plotting the data.
+
+After loading the data and transforming categorical variables into factors, we can plot the data to understand it better.
+
+```{r}
+data("mgus")
+# transforming into factors
+mgus$death = as.factor(mgus$death)
+mgus$pcdx =  as.factor(mgus$pcdx)
+
+hist(mgus$age, xlab="Age", main = "Histogram of age")
+barplot(prop.table(table(mgus$sex)), ylab = "Proportion", main = "Proportion of male and female")
+barplot(prop.table(table(mgus1$event)), names=c("Censor", "PCM", "Death"), ylab = "Proportion", main = "Proportion of ending events")
+barplot(prop.table(table(mgus$pcdx)), ylab = "Proportion", xlab = "Type of plasma cell malignancy", main = "Proportion of different PCMs")
+pairs(alb~creat+hgb+mspike, data=mgus, main = "Scaterplots of biometrics")
+
+```
+From the plots above, if we consider the data to be a fair sample, we can see that monoclonal gammopathy of undetermined significance (MGUS) is the most prevalent among people who are over 45 up to 80. Furthermore, the data has a slightly higher share of male respondents than female (60% and 40% respectatively). The majority of cases ended up with death with roughly 20%  ending up in a state of plasma cell malignancy (PCM) and less than 10% being censored. Out of all the cases that developed a type of PCM, the largest proportion of people developed multiple myeloma (MM) (roughly 70%), followed by amyloidosis (over 10%), macroglobulinemia (around 10%) and ymphprolifative disorders (less than 10%). Finally, looking into the relationship between four biometrics reported in the dataset, there does not seem to be a high correlation among them. Only albumin showed some correlation with hemoglobin, yet the correlation is weak.
+
+## Question 2) Kaplan–Meier estimator
+
+Kaplan-Meier estimator is defined as
+
+$$
+\hat{S}(t) = \prod_{i: Y_i \leq t}\Big(1-\frac{d_i}{n_i}\Big)^{\delta(i)}
+$$
+where $Y_i$ is the i-th smallest observation, $\dealt(i)$ - an indicator function for death versus no death or censoring, $d_i$ - a number of people who died on the i-th interval and $n_i$ - people at risk at i-th interval. 
+
+As nored before, the mgus dataset has two three outcomes: death, censoring and developing PCMs. Hence, we can calculate two survival functions: one for those who dies and for those who have developed a PCM. After discarding the cases who have died after developing PCM the Kaplan-Meier estimators look like this:
+
+```{r}
+# enum = 1 exlcude those who died after PCM. 
+km_fit = survfit(Surv(start, stop, event) ~ 1, id = id, data = mgus1, subset = (enum==1), conf.type = "log")
+plot(km_fit, xscale=362.25, xlab = "Years", ylab = "Death or PCM probability", col=c(1,2))
+legend(0, .5, c("Death", "PCM"),  col=c(2,1), lty = c(1,1),bty='n')
+```
+
+However, we might want to include thosse cases who died after developing PCM. Consequently, the Kaplan-Meier estimator for the death rates looks like this:
+```{r}
+# enum = 1 exlcude those who died after PCM. 
+km_fit2 = survfit(Surv(start, stop, event=="death") ~ 1, id = id, data = mgus1, conf.type = "log")
+plot(km_fit2, xscale=362.25, xlab = "Years", ylab = "Survival probability", col=c(1,1))
+```
+
+## Question 3) Confidence Intervals
+
+There are three main ways of calculating confidence intervals for the Kaplan-Meier estimator. Since $\hat{S}(t)$ is a maximum likelihood estimator, it implies that it should be asymptotically normally distributed. Thus, we can use normal tables to define confidence intervals. However, nothing prevents these intervals to become negative or larger than one. Thus one common suggestion is to take logarithm of $\hat{S}(t)$. This is the default confidence interval estimation and thus I will calculate it. Note, log transformation prevents confidence intervals from being negative, yet they still can be more than one. In such a case, we would just truncate the values larger than one to 1. 
+
+In order to calculate log confidence intervals, we need to find $Var(log(\hat{S}(t))$. It is easy to do so from the precalculated variance of the Kaplan-Meier estimator. Knowing that using Delta Method we get $Var(\hat{S}(t))$ to be a function of $Var(log(\hat{S}(t))$, we can define $Var(log(\hat{S}(t))$ to be:
+
+$$
+Var(log(\hat{S}(t)) = \frac{Var(\hat{S}(t))}{[\hat{S}(t)]^2}
+$$
+I will define confidence intervals for the first and second Kaplan-Meier estimators discussed above.
+
+```{r}
+# confidence intervals for the first KM estimator
+# extracting standard errors  and S_hat from the first KM estimator
+stand_err_death = km_fit$std.err[,3]
+stand_err_pcm = km_fit$std.err[,2]
+prob_death = km_fit$pstate[,3]
+prob_pcm = km_fit$pstate[,2]
+
+# transforming them to be log-variance
+log_var_death = stand_err_death^2/prob_death^2
+log_var_pcm = stand_err_pcm^2/prob_pcm^2
+
+span_death = qnorm(0.975) * sqrt(log_var_death)
+span_pcm = qnorm(0.975) * sqrt(log_var_pcm)
+
+# log confidence interval
+lower_death = exp(log(prob_death)- span_death)
+upper_death = exp(log(prob_death) + span_death)
+
+lower_pcm = exp(log(prob_pcm)- span_pcm)
+upper_pcm = exp(log(prob_pcm) + span_pcm)
+
+Confidence = data.frame(km_fit$time, lower_death, upper_death, lower_pcm, upper_pcm, prob_pcm, prob_death)
+
+df = Confidence %>%
+  select(km_fit.time, lower_death, upper_death, lower_pcm, upper_pcm, prob_pcm, prob_death) %>%
+  gather(key = "variable", value = "value", -km_fit.time)
+
+head(df)
+
+ggplot(data=df, aes(x=km_fit.time/365.25, y=value)) + geom_line(aes(color = variable, linetype = variable), size = 1) + 
+  scale_linetype_manual(values=c(3, 3, 1, 1, 3, 3)) +
+  scale_color_manual(values = c("#00AFBB","#E7B800", "#00AFBB", "#E7B800", "#00AFBB",  "#E7B800" )) +
+  theme(legend.position="none") + xlab( "Years") + ylab("Probability") 
+
+```
+
+
+Doing the same for the second Kaplan-Meier estimator incorporating all deaths we get:
+
+```{r}
+---
+title: "Medical Statistics"
+author: "u1620789"
+date: "3/21/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo = T, results="hide", message=FALSE}
+library(survival)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+```
+
+## Question 1) Plotting the data.
+
+After loading the data and transforming categorical variables into factors, we can plot the data to understand it better.
+
+```{r}
+data("mgus")
+# transforming into factors
+mgus$death = as.factor(mgus$death)
+mgus$pcdx =  as.factor(mgus$pcdx)
+
+hist(mgus$age, xlab="Age", main = "Histogram of age")
+barplot(prop.table(table(mgus$sex)), ylab = "Proportion", main = "Proportion of male and female")
+barplot(prop.table(table(mgus1$event)), names=c("Censor", "PCM", "Death"), ylab = "Proportion", main = "Proportion of ending events")
+barplot(prop.table(table(mgus$pcdx)), ylab = "Proportion", xlab = "Type of plasma cell malignancy", main = "Proportion of different PCMs")
+pairs(alb~creat+hgb+mspike, data=mgus, main = "Scaterplots of biometrics")
+
+```
+From the plots above, if we consider the data to be a fair sample, we can see that monoclonal gammopathy of undetermined significance (MGUS) is the most prevalent among people who are over 45 up to 80. Furthermore, the data has a slightly higher share of male respondents than female (60% and 40% respectatively). The majority of cases ended up with death with roughly 20%  ending up in a state of plasma cell malignancy (PCM) and less than 10% being censored. Out of all the cases that developed a type of PCM, the largest proportion of people developed multiple myeloma (MM) (roughly 70%), followed by amyloidosis (over 10%), macroglobulinemia (around 10%) and ymphprolifative disorders (less than 10%). Finally, looking into the relationship between four biometrics reported in the dataset, there does not seem to be a high correlation among them. Only albumin showed some correlation with hemoglobin, yet the correlation is weak.
+
+## Question 2) Kaplan–Meier estimator
+
+Kaplan-Meier estimator is defined as
+
+$$
+\hat{S}(t) = \prod_{i: Y_i \leq t}\Big(1-\frac{d_i}{n_i}\Big)^{\delta(i)}
+$$
+where $Y_i$ is the i-th smallest observation, $\dealt(i)$ - an indicator function for death versus no death or censoring, $d_i$ - a number of people who died on the i-th interval and $n_i$ - people at risk at i-th interval. 
+
+As nored before, the mgus dataset has two three outcomes: death, censoring and developing PCMs. Hence, we can calculate two survival functions: one for those who dies and for those who have developed a PCM. After discarding the cases who have died after developing PCM the Kaplan-Meier estimators look like this:
+
+```{r}
+# enum = 1 exlcude those who died after PCM. 
+km_fit = survfit(Surv(start, stop, event) ~ 1, id = id, data = mgus1, subset = (enum==1), conf.type = "log")
+plot(km_fit, xscale=362.25, xlab = "Years", ylab = "Death or PCM probability", col=c(1,2))
+legend(0, .5, c("Death", "PCM"),  col=c(2,1), lty = c(1,1),bty='n')
+```
+
+However, we might want to include thosse cases who died after developing PCM. Consequently, the Kaplan-Meier estimator for the death rates looks like this:
+```{r}
+# enum = 1 exlcude those who died after PCM. 
+km_fit2 = survfit(Surv(start, stop, event=="death") ~ 1, id = id, data = mgus1, conf.type = "log")
+plot(km_fit2, xscale=362.25, xlab = "Years", ylab = "Survival probability", col=c(1,1))
+```
+
+## Question 3) Confidence Intervals
+
+There are three main ways of calculating confidence intervals for the Kaplan-Meier estimator. Since $\hat{S}(t)$ is a maximum likelihood estimator, it implies that it should be asymptotically normally distributed. Thus, we can use normal tables to define confidence intervals. However, nothing prevents these intervals to become negative or larger than one. Thus one common suggestion is to take logarithm of $\hat{S}(t)$. This is the default confidence interval estimation and thus I will calculate it. Note, log transformation prevents confidence intervals from being negative, yet they still can be more than one. In such a case, we would just truncate the values larger than one to 1. 
+
+In order to calculate log confidence intervals, we need to find $Var(log(\hat{S}(t))$. It is easy to do so from the precalculated variance of the Kaplan-Meier estimator. Knowing that using Delta Method we get $Var(\hat{S}(t))$ to be a function of $Var(log(\hat{S}(t))$, we can define $Var(log(\hat{S}(t))$ to be:
+
+$$
+Var(log(\hat{S}(t)) = \frac{Var(\hat{S}(t))}{[\hat{S}(t)]^2}
+$$
+I will define confidence intervals for the first and second Kaplan-Meier estimators discussed above.
+
+```{r}
+# confidence intervals for the first KM estimator
+# extracting standard errors  and S_hat from the first KM estimator
+stand_err_death = km_fit$std.err[,3]
+stand_err_pcm = km_fit$std.err[,2]
+prob_death = km_fit$pstate[,3]
+prob_pcm = km_fit$pstate[,2]
+
+# transforming them to be log-variance
+log_var_death = stand_err_death^2/prob_death^2
+log_var_pcm = stand_err_pcm^2/prob_pcm^2
+
+span_death = qnorm(0.975) * sqrt(log_var_death)
+span_pcm = qnorm(0.975) * sqrt(log_var_pcm)
+
+# log confidence interval
+lower_death = exp(log(prob_death)- span_death)
+upper_death = exp(log(prob_death) + span_death)
+
+lower_pcm = exp(log(prob_pcm)- span_pcm)
+upper_pcm = exp(log(prob_pcm) + span_pcm)
+
+Confidence = data.frame(km_fit$time, lower_death, upper_death, lower_pcm, upper_pcm, prob_pcm, prob_death)
+
+df = Confidence %>%
+  select(km_fit.time, lower_death, upper_death, lower_pcm, upper_pcm, prob_pcm, prob_death) %>%
+  gather(key = "variable", value = "value", -km_fit.time)
+
+head(df)
+
+ggplot(data=df, aes(x=km_fit.time/365.25, y=value)) + geom_line(aes(color = variable, linetype = variable), size = 1) + 
+  scale_linetype_manual(values=c(3, 3, 1, 1, 3, 3)) +
+  scale_color_manual(values = c("#00AFBB","#E7B800", "#00AFBB", "#E7B800", "#00AFBB",  "#E7B800" )) +
+  theme(legend.position="none") + xlab( "Years") + ylab("Probability") 
+
+```
+
+
+Doing the same for the second Kaplan-Meier estimator incorporating all deaths we get:
+
+```{r}
+---
+title: "Medical Statistics"
+author: "u1620789"
+date: "3/21/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo = T, results="hide", message=FALSE}
+library(survival)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+```
+
+## Question 1) Plotting the data.
+
+After loading the data and transforming categorical variables into factors, we can plot the data to understand it better.
+
+```{r}
+data("mgus")
+# transforming into factors
+mgus$death = as.factor(mgus$death)
+mgus$pcdx =  as.factor(mgus$pcdx)
+
+hist(mgus$age, xlab="Age", main = "Histogram of age")
+barplot(prop.table(table(mgus$sex)), ylab = "Proportion", main = "Proportion of male and female")
+barplot(prop.table(table(mgus1$event)), names=c("Censor", "PCM", "Death"), ylab = "Proportion", main = "Proportion of ending events")
+barplot(prop.table(table(mgus$pcdx)), ylab = "Proportion", xlab = "Type of plasma cell malignancy", main = "Proportion of different PCMs")
+pairs(alb~creat+hgb+mspike, data=mgus, main = "Scaterplots of biometrics")
+
+```
+From the plots above, if we consider the data to be a fair sample, we can see that monoclonal gammopathy of undetermined significance (MGUS) is the most prevalent among people who are over 45 up to 80. Furthermore, the data has a slightly higher share of male respondents than female (60% and 40% respectatively). The majority of cases ended up with death with roughly 20%  ending up in a state of plasma cell malignancy (PCM) and less than 10% being censored. Out of all the cases that developed a type of PCM, the largest proportion of people developed multiple myeloma (MM) (roughly 70%), followed by amyloidosis (over 10%), macroglobulinemia (around 10%) and ymphprolifative disorders (less than 10%). Finally, looking into the relationship between four biometrics reported in the dataset, there does not seem to be a high correlation among them. Only albumin showed some correlation with hemoglobin, yet the correlation is weak.
+
+## Question 2) Kaplan–Meier estimator
+
+Kaplan-Meier estimator is defined as
+
+$$
+\hat{S}(t) = \prod_{i: Y_i \leq t}\Big(1-\frac{d_i}{n_i}\Big)^{\delta(i)}
+$$
+where $Y_i$ is the i-th smallest observation, $\dealt(i)$ - an indicator function for death versus no death or censoring, $d_i$ - a number of people who died on the i-th interval and $n_i$ - people at risk at i-th interval. 
+
+As nored before, the mgus dataset has two three outcomes: death, censoring and developing PCMs. Hence, we can calculate two survival functions: one for those who dies and for those who have developed a PCM. After discarding the cases who have died after developing PCM the Kaplan-Meier estimators look like this:
+
+```{r}
+# enum = 1 exlcude those who died after PCM. 
+km_fit = survfit(Surv(start, stop, event) ~ 1, id = id, data = mgus1, subset = (enum==1), conf.type = "log")
+plot(km_fit, xscale=362.25, xlab = "Years", ylab = "Death or PCM probability", col=c(1,2))
+legend(0, .5, c("Death", "PCM"),  col=c(2,1), lty = c(1,1),bty='n')
+```
+
+However, we might want to include thosse cases who died after developing PCM. Consequently, the Kaplan-Meier estimator for the death rates looks like this:
+```{r}
+km_fit2 = survfit(Surv(start, stop, event=="death") ~ 1, id = id, data = mgus1, conf.type = "log")
+plot(km_fit2, xscale=362.25, xlab = "Years", ylab = "Survival probability", col=c(1,1))
+```
+
+## Question 3) Confidence Intervals
+
+There are three main ways of calculating confidence intervals for the Kaplan-Meier estimator. Since $\hat{S}(t)$ is a maximum likelihood estimator, it implies that it should be asymptotically normally distributed. Thus, we can use normal tables to define confidence intervals. However, nothing prevents these intervals to become negative or larger than one. Thus one common suggestion is to take logarithm of $\hat{S}(t)$. This is the default confidence interval estimation and thus I will calculate it. Note, log transformation prevents confidence intervals from being negative, yet they still can be more than one. In such a case, we would just truncate the values larger than one to 1. 
+
+In order to calculate log confidence intervals, we need to find $Var(log(\hat{S}(t))$. It is easy to do so from the precalculated variance of the Kaplan-Meier estimator. Knowing that using Delta Method we get $Var(\hat{S}(t))$ to be a function of $Var(log(\hat{S}(t))$, we can define $Var(log(\hat{S}(t))$ to be:
+
+$$
+Var(log(\hat{S}(t)) = \frac{Var(\hat{S}(t))}{[\hat{S}(t)]^2}
+$$
+I will define confidence intervals for the first and second Kaplan-Meier estimators discussed above.
+
+```{r}
+# confidence intervals for the first KM estimator
+# extracting standard errors  and S_hat from the first KM estimator
+stand_err_death = km_fit$std.err[,3]
+stand_err_pcm = km_fit$std.err[,2]
+prob_death = km_fit$pstate[,3]
+prob_pcm = km_fit$pstate[,2]
+
+# transforming them to be log-variance
+log_var_death = stand_err_death^2/prob_death^2
+log_var_pcm = stand_err_pcm^2/prob_pcm^2
+
+span_death = qnorm(0.975) * sqrt(log_var_death)
+span_pcm = qnorm(0.975) * sqrt(log_var_pcm)
+
+# log confidence interval
+lower_death = exp(log(prob_death)- span_death)
+upper_death = exp(log(prob_death) + span_death)
+
+lower_pcm = exp(log(prob_pcm)- span_pcm)
+upper_pcm = exp(log(prob_pcm) + span_pcm)
+
+Confidence = data.frame(km_fit$time, lower_death, upper_death, lower_pcm, upper_pcm, prob_pcm, prob_death)
+
+df = Confidence %>%
+  select(km_fit.time, lower_death, upper_death, lower_pcm, upper_pcm, prob_pcm, prob_death) %>%
+  gather(key = "variable", value = "value", -km_fit.time)
+
+ggplot(data=df, aes(x=km_fit.time/365.25, y=value)) + geom_line(aes(color = variable, linetype = variable), size = 1) + 
+  scale_linetype_manual(values=c(3, 3, 1, 1, 3, 3)) +
+  scale_color_manual(values = c("#00AFBB","#E7B800", "#00AFBB", "#E7B800", "#00AFBB",  "#E7B800" )) +
+  theme(legend.position="none") + xlab( "Years") + ylab("Probability") 
+
+```
+The plot above shows the probability of death and its confidence interval (blue lines) and developing PCMs and its confidence interval (yellow lines) by years since the diagnosis.
+
+Doing the same for the second Kaplan-Meier estimator incorporating all deaths we get:
+
+```{r}
+# confidence intervals for the first KM estimator
+# extracting standard errors  and S_hat from the first KM estimator
+stand_err_2 = km_fit2$std.err
+prob_death_2 = km_fit2$surv
+
+# transforming them to be log-variance
+log_var_death_2 = stand_err_2^2/prob_death_2^2
+
+span_death_2 = qnorm(0.975) * sqrt(log_var_death_2)
+
+# log confidence interval
+lower_death_2 = exp(log(prob_death_2) - span_death_2)
+upper_death_2 = exp(log(prob_death_2) + span_death_2)
+
+Confidence_2 = data.frame(km_fit2$time, lower_death_2, upper_death_2, prob_death_2)
+
+df_2 = Confidence_2 %>%
+  select(km_fit2.time, lower_death_2, upper_death_2, prob_death_2) %>%
+  gather(key = "variable", value = "value", -km_fit2.time)
+
+ggplot(data=df_2, aes(x=km_fit2.time/365.25, y=value)) + 
+  geom_line(aes(color ="#00AFBB", linetype = variable), size = 1) + 
+  scale_linetype_manual(values=c(3, 1, 3)) +
+  theme(legend.position="none") + xlab( "Years") + ylab("Probability") 
+```
+where the red lines indicates survival probability according to the years since the diagnosis. 
+
+## Question 4) Two sample testing.
+
+First of all, we need to transform mgus2 data to time-status format. 
+
+```{r}
+# Defining status - 0 censor, 1 - death or pcm, 2 - pcm followed by death
+mgus2$status = mgus2$pstat+mgus2$death
+
+# count of censored
+length(mgus2$status[mgus2$status==0])
+# 409
+
+# count of death or pcm
+length(mgus2$status[mgus2$status==1])
+# 872
+
+#  count of pcm followed by death
+length(mgus2$status[mgus2$status==2])
+# 103
+
+# defining "event" variable as in mgus1 - the variables notes the last event recorded
+mgus2$event = ifelse(mgus2$status==1 & mgus2$pstat==1, "pcm", 
+                     ifelse(mgus2$status==1 & mgus2$death==1, "death", "censor"))
+mgus2$event = ifelse(mgus2$status ==2, "death", mgus2$event)
+
+# count of censored
+length(mgus2$event[mgus2$event=="censor"]) 
+# 409
+
+# count of last event - death
+length(mgus2$event[mgus2$event=="death"]) 
+# 963
+
+# count of last event - pcm
+length(mgus2$event[mgus2$event=="pcm"]) 
+# 12
+```
+
+We see that, compared to mgus1, there are not many last event as transition to PCM cases. Thus, the two-sample test will be conducted only for the death rates. 
+
+Now, we have to extract the required time, status and event variables from both datasets and join them in a combined dataset.
+
+```{r}
+# MGUS1 measures time in days, need to define time variable - not start and stop - 
+# and then transform it to years
+mgus1$time = (mgus1$stop - mgus1$start)/365.25
+
+# creating testing dataframe
+test_df = data.frame(mgus1$time, mgus1$status, mgus1$event)
+# variable to distinguish two samples
+test_df$dataset = "mgus1"
+names(test_df)[1] <- "time"
+names(test_df)[2] <- "status"
+names(test_df)[3] <- "event"
+
+#MGUS2 measures time in months - adjusting to years
+test_df_temp = data.frame(mgus2$futime/12, mgus2$status, mgus2$even)
+test_df_temp$dataset = "mgus2"
+names(test_df_temp)[1] <- "time"
+names(test_df_temp)[2] <- "status"
+names(test_df_temp)[3] <- "event"
+
+# appending two datasets
+test_df = rbind(test_df, test_df_temp)
+# since we look into death only, change status = 2 to status = 1.
+test_df$status = ifelse(test_df$status==2, 1, test_df$status)
+```
+
+Two see which two-sample test would be the best, first let's plot both survival curves. 
+
+```{r}
+km_fit3 = survfit(Surv(time, event=="death") ~ dataset,  data = test_df, conf.type = "log")
+plot(km_fit3, xlab = "Years", ylab = "Overall survival probability", col=c(1,2))
+legend(2, 1, c("mgus2", "mgus1"),  col=c(2,1), lty = c(1,1),bty='n')
+```
+
+The survival curves shows that in almost all periods, apart from the very begining, mgus1 sample has a higher survival probability than mgus2. This is a good sign and it means that almost any two-sample test we choose should lead to the same conclussion. However, mgus2 has a lot of censored data. Gehan's test assigns higher weights to observations, thus if a lot of censored data is early on, it might give slightly misleading results. To check this, we need to examine how many observations are censored early on in the study.
+
+```{r}
+print( "Proportion censored before reaching 10 years:")
+sum(ifelse(test_df$status==0 & test_df$time < 10 & test_df$dataset =="mgus2", 1, 0)) / sum(ifelse(test_df$time < 10 & test_df$dataset =="mgus2", 1, 0))
+print( "Proportion censored before reaching 7 years:")
+sum(ifelse(test_df$status==0 & test_df$time < 7 & test_df$dataset =="mgus2", 1, 0)) / sum(ifelse(test_df$time < 7 & test_df$dataset =="mgus2", 1, 0))
+print( "Proportion censored before reaching 5 years:")
+sum(ifelse(test_df$status==0 & test_df$time < 5 & test_df$dataset =="mgus2", 1, 0)) / sum(ifelse( test_df$time < 5 & test_df$dataset =="mgus2", 1, 0))
+```
+
+Thus, 19% of observations from mgus2 are censored before reaching 10 years, with the same figure for 7 years reaching 12.7% and for 5 years - 5.5%. Consequently, we could worry that Gehan's test would be misleading due to high weight it puts on early observations. Thus, Mantel-Haenszel test is chosen for compating mgus1 and mgus2.
+
+Under the null hypothesis, there is no association between the survival and the subsample: $H0: \mathbb{P}[survive|mgus1]=\mathbb{P}[survive|mgus2]$. Under alternative hypothesis, $H1: \mathbb{P}[survive|mgus1] \neq \mathbb{P}[survive|mgus2]$. The test statistics is ass follows:
+
+$$
+\begin{align*}
+MH &= \frac{\big(\sum_{i=1}^T(d_{1i}-\mathbb{E}[d_{1i}])\big)^2}{\sum_{i=1}^TVar(d_{1i})} \\
+&= \frac{\big(\sum_{i=1}^T(d_{1i}-n_{1i}d_{i}/n_i)\big)^2}{\sum_{i=1}^Tn_{2i}n_{1i}d_i(n_i-d_i)/n_i^2(n_i-1)}
+\end{align*}
+$$
+where $T$ denotes the number of periods, $d_{ji}$ for $j = 1,2$ number of deaths at period $i$ in mgus1 or mgus2, $n_{ji}$ - total number of people in group $j$ at period $i$, $d_i$ - total number of deaths in period $i$, $n_i$ - total number of people in period $i$. This statistic is approximately distributed as $\chi^2$ with one degree of freedom under the null hypothesis. The test result is as follows:
+
+```{r}
+survdiff(Surv(time, status) ~ dataset, data = test_df, subset =(event=="death"), rho=0)
+```
+With p-value being very low, we can reject the null hypothesis of no association between survival and subsamples, thus the samples are different. 
+
+## Question 4) Cox regression
+
+Two Cox regressions will be implemented for the mortality following MGUS diagnosis. Initially, I try univariates cases with each variable to detect which ones would just be giving noise. Following that, I will conduct variable selection based on concordance, AIC and the test statistics. Finally, I will proceed with interpretation. 
+
+Let's begin with implementing univariate models.
+
+```{r}
+cox = coxph(Surv(start, stop, event=="death") ~ age, id=id, data = mgus1)
+summary(cox)
+# highly significant
+cox = coxph(Surv(start, stop, event=="death") ~ sex, id=id, data = mgus1)
+summary(cox)
+# significant
+cox = coxph(Surv(start, stop, event=="death") ~ hgb, id=id, data = mgus1)
+summary(cox)
+# highly significant
+cox = coxph(Surv(start, stop, event=="death") ~  creat, id=id, data = mgus1)
+summary(cox)
+# highly significant
+cox = coxph(Surv(start, stop, event=="death") ~  alb, id=id, data = mgus1)
+summary(cox)
+# highly significant
+cox = coxph(Surv(start, stop, event=="death") ~  dxyr, id=id, data = mgus1)
+summary(cox)
+# not significant
+cox = coxph(Surv(start, stop, event=="death") ~  mspike, id=id, data = mgus1)
+summary(cox)
+# not significant
+```
+
+From the analysis above, we see than we can discard serum M-Spike and year of diagnosis variables. Sex variable yielded a p-value of 0.0114 and appeared to be the least important of all the significant variables, yet we still fit it in the regression and discard if needed. 
+
+```{r}
+cox = coxph(Surv(start, stop, event=="death") ~ age +sex +hgb+alb+creat  , id=id, data = mgus1)
+summary(cox)
+print("AIC:") 
+AIC(cox)
+```
+
+The model gives AIC score of 1345.326, concordance of 0.71 and Wald test of 130. Let's see can we improve it by removing sex variable which was the least significant in univariate case:
+
+```{r}
+cox = coxph(Surv(start, stop, event=="death") ~age+hgb+creat+alb  , id=id, data = mgus1)
+summary(cox)
+print("AIC:") 
+AIC(cox)
+```
+
+Removing sex variable improved AIC score. However, concordance and , Likelihood ration test and Score test shrank slightly. Thus, I have decided to retain the sex variable. Removing any of the biometrics, worsened all the results apart from removing albumine. I thus present the results bellow:
+
+```{r}
+cox = coxph(Surv(start, stop, event=="death") ~age+hgb+creat+sex  , id=id, data = mgus1)
+summary(cox)
+print("AIC:") 
+AIC(cox)
+```
+After removing the albumine variable, concordance, LRT, Wald's test and Score test improved. AIC score has increased, yet prioritising the other tests, I have decided to discard albumine, especially since it showed no significance in the model before. Furthermore, an age variable requires some attention. It is only natural that people are more likely to die with higher age regardless of their underlying conditions. Thus, I believe that the streght of this coefficient is slightly overestimated, especially, considering that the median age of a sample is around 62 years. Nonetheless, the fact that biometrics are significant even after controlling for age, indicates that the MGUS affects people's survival in some way.
+
+Regarding the interpretation, we should take the exponential of the coeficients to see their relative hazard odd. Thus, age seems to be increasing risk of dealth by roughly 7.71% per year. Hemoglobin, on the other hand, seems to reducing the risk of death. An increase in one gramm per deciliter of hemoglobin, reduces the risk of death by roughyl 13.76%. Moreover, it seems that creatinine is the variable which has the highest effect to the risk of death. An increase of creatinine levels by one μmol/L, on average increases the risk of death by 52%. Lastly, even though sex variable appeared to be mildly important in improving the mode, it does not appear to be instrumental in explaining risk of death. There is some evidence that men experience higher hazard of death, yet since the confidence interval includes one, if the effect exist, it is marginal. 
+
+
+
+
+
+
